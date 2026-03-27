@@ -828,6 +828,7 @@ export default function App() {
             <p className="text-xs text-center text-slate-400 mt-6">
               يجب أن يكون حسابك مسجلاً من قبل المسؤول للوصول إلى النظام
             </p>
+            <p className="text-[10px] text-center text-slate-300 mt-2">v1.0.2 - Username Login Update</p>
           </form>
         </motion.div>
       </div>
