@@ -137,6 +137,14 @@ export default function App() {
             console.log("User document found:", userDoc.data());
             setUser({ ...userDoc.data(), id: userDoc.id, uid: firebaseUser.uid } as User);
           } else {
+            // Wait a bit to see if the document is being created (e.g. during bootstrap)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+            if (userDoc && userDoc.exists()) {
+               console.log("User document found after delay:", userDoc.data());
+               setUser({ ...userDoc.data(), id: userDoc.id, uid: firebaseUser.uid } as User);
+               return;
+            }
             console.log("User document not found. Logging out...");
             setLoginError('يرجى التواصل مع المدير لتفعيل حسابك');
             await logout();
@@ -258,6 +266,9 @@ export default function App() {
              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, 'admin123');
              const uid = userCredential.user.uid;
              
+             // Sign in primary auth first so we have permissions to write to Firestore
+             await loginWithEmail('admin', 'admin123');
+             
              await setDoc(doc(db, 'users', uid), {
                uid: uid,
                username: 'admin',
@@ -268,10 +279,29 @@ export default function App() {
              });
              
              await deleteApp(secondaryApp);
-             // Now login with the newly created account
-             await loginWithEmail('admin', 'admin123');
              return;
            } catch (err: any) {
+             if (err.code === 'auth/email-already-in-use') {
+                console.log("Admin email already exists in Auth, trying to login and write Firestore doc...");
+                try {
+                  await loginWithEmail('admin', 'admin123');
+                  const uid = auth.currentUser?.uid;
+                  if (uid) {
+                    await setDoc(doc(db, 'users', uid), {
+                      uid: uid,
+                      username: 'admin',
+                      password: 'admin123',
+                      name: 'مدير النظام',
+                      role: 'admin',
+                      createdAt: serverTimestamp()
+                    });
+                    await deleteApp(secondaryApp);
+                    return;
+                  }
+                } catch (loginErr: any) {
+                  console.error("Login error during bootstrap recovery:", loginErr);
+                }
+             }
              await deleteApp(secondaryApp);
              console.error("Bootstrap error:", err);
              setLoginError('حدث خطأ أثناء إعداد حساب المدير: ' + err.message);
