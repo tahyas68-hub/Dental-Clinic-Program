@@ -1,0 +1,139 @@
+{
+  "entities": {
+    "Patient": {
+      "title": "Patient",
+      "description": "Patient information",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "birthdate": { "type": "string" },
+        "gender": { "type": "string", "enum": ["ذكر", "أنثى"] },
+        "medical_history": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Appointment details",
+      "type": "object",
+      "properties": {
+        "patient_id": { "type": "string" },
+        "patient_name": { "type": "string" },
+        "doctor_id": { "type": "string" },
+        "start_time": { "type": "string", "format": "date-time" },
+        "end_time": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["patient_id", "start_time"]
+    },
+    "Procedure": {
+      "title": "Procedure",
+      "description": "Dental procedures/services",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "price": { "type": "number" }
+      },
+      "required": ["name", "price"]
+    },
+    "Medication": {
+      "title": "Medication",
+      "description": "Available medications",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Clinic supplies",
+      "type": "object",
+      "properties": {
+        "item_name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "min_threshold": { "type": "number" }
+      },
+      "required": ["item_name", "quantity"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Patient billing",
+      "type": "object",
+      "properties": {
+        "invoice_number": { "type": "number" },
+        "patient_id": { "type": "string" },
+        "patient_name": { "type": "string" },
+        "total_amount": { "type": "number" },
+        "paid_amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "paid", "partial"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patient_id", "total_amount", "invoice_number"]
+    },
+    "UserRole": {
+      "title": "UserRole",
+      "description": "User roles and permissions",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "doctor", "accountant", "receptionist"] }
+      },
+      "required": ["uid", "role"]
+    },
+    "Prescription": {
+      "title": "Prescription",
+      "description": "Medical prescription for a patient",
+      "type": "object",
+      "properties": {
+        "patient_id": { "type": "string" },
+        "doctor_id": { "type": "string" },
+        "weight": { "type": "string" },
+        "bp": { "type": "string" },
+        "diagnosis": { "type": "string" },
+        "medications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "dosage": { "type": "string" },
+              "frequency": { "type": "string" }
+            }
+          }
+        },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patient_id", "medications"]
+    },
+    "ClinicSettings": {
+      "title": "ClinicSettings",
+      "description": "Global clinic settings",
+      "type": "object",
+      "properties": {
+        "clinic_name": { "type": "string" },
+        "clinic_logo": { "type": "string" },
+        "contact_info": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/patients": { "schema": "Patient", "description": "List of patients" },
+    "/appointments": { "schema": "Appointment", "description": "Scheduled appointments" },
+    "/procedures": { "schema": "Procedure", "description": "Available dental services" },
+    "/medications": { "schema": "Medication", "description": "Medication list" },
+    "/inventory": { "schema": "InventoryItem", "description": "Clinic inventory" },
+    "/invoices": { "schema": "Invoice", "description": "Billing records" },
+    "/prescriptions": { "schema": "Prescription", "description": "Patient prescriptions" },
+    "/users": { "schema": "UserRole", "description": "User roles" },
+    "/settings": { "schema": "ClinicSettings", "description": "Clinic configuration" }
+  }
+}

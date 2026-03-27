@@ -1,0 +1,157 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: patients
+    // Fields: name (string), phone (string), birthdate (string), gender (string), medical_history (string), created_at (string)
+    //
+    // Collection: appointments
+    // Fields: patient_id (string), patient_name (string), doctor_id (string), start_time (string), end_time (string), status (string), notes (string)
+    //
+    // Collection: procedures
+    // Fields: name (string), category (string), price (number)
+    //
+    // Collection: medications
+    // Fields: name (string), description (string)
+    //
+    // Collection: inventory
+    // Fields: item_name (string), quantity (number), unit (string), min_threshold (number)
+    //
+    // Collection: invoices
+    // Fields: invoice_number (number), patient_id (string), patient_name (string), total_amount (number), paid_amount (number), status (string), createdAt (timestamp)
+    //
+    // Collection: users
+    // Fields: uid (string), email (string), name (string), role (string)
+    //
+    // Collection: settings
+    // Fields: clinic_name (string), clinic_logo (string), contact_info (string)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "tahyas68@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isDoctor() {
+      return isAuthenticated() && (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'doctor');
+    }
+
+    function isReceptionist() {
+      return isAuthenticated() && (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'receptionist');
+    }
+
+    function isAccountant() {
+      return isAuthenticated() && (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'accountant');
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidPatient(data) {
+      return hasOnlyAllowedFields(['name', 'phone', 'birthdate', 'gender', 'medical_history', 'created_at']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             data.gender in ['ذكر', 'أنثى'];
+    }
+
+    function isValidAppointment(data) {
+      return hasOnlyAllowedFields(['patient_id', 'patient_name', 'doctor_id', 'start_time', 'end_time', 'status', 'notes']) &&
+             data.patient_id is string &&
+             data.status in ['pending', 'confirmed', 'cancelled'] &&
+             isValidDateString(data.start_time) &&
+             isValidDateString(data.end_time);
+    }
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'name', 'role', 'username', 'password', 'createdAt']) &&
+             data.role in ['admin', 'doctor', 'accountant', 'receptionist'] &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidUser(request.resource.data);
+      allow delete: if isAdmin() && userId != request.auth.uid;
+    }
+
+    match /patients/{patientId} {
+      allow read: if isDoctor() || isReceptionist();
+      allow create, update: if (isDoctor() || isReceptionist()) && isValidPatient(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /appointments/{appointmentId} {
+      allow read: if isDoctor() || isReceptionist();
+      allow create, update: if (isDoctor() || isReceptionist()) && isValidAppointment(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /procedures/{procedureId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /medications/{medicationId} {
+      allow read: if isDoctor();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isReceptionist() || isAdmin();
+      allow create, update, delete: if (isReceptionist() || isAdmin());
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if isAccountant() || isAdmin();
+      allow create, update: if (isAccountant() || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /prescriptions/{prescriptionId} {
+      allow read: if isDoctor() || isAdmin();
+      allow create, update: if isDoctor() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /counters/{counterId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // Should be more restrictive but needed for transactions
+    }
+  }
+}
