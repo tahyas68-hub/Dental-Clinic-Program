@@ -24,7 +24,13 @@ service cloud.firestore {
     // Fields: invoice_number (number), patient_id (string), patient_name (string), total_amount (number), paid_amount (number), status (string), createdAt (timestamp)
     //
     // Collection: users
-    // Fields: uid (string), email (string), name (string), role (string)
+    // Fields: uid (string), username (string), password (string), name (string), role (string), createdAt (timestamp)
+    //
+    // Collection: prescriptions
+    // Fields: patient_id (string), doctor_id (string), medications (array), createdAt (timestamp)
+    //
+    // Collection: treatments
+    // Fields: patient_id (string), procedure_name (string), doctor_name (string), cost (number), notes (string), date (string)
     //
     // Collection: settings
     // Fields: clinic_name (string), clinic_logo (string), contact_info (string)
@@ -95,6 +101,13 @@ service cloud.firestore {
              (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
+    function isValidTreatment(data) {
+      return hasOnlyAllowedFields(['patient_id', 'procedure_name', 'doctor_name', 'cost', 'notes', 'date']) &&
+             data.patient_id is string &&
+             data.procedure_name is string &&
+             isValidDateString(data.date);
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -139,6 +152,12 @@ service cloud.firestore {
     }
 
     match /prescriptions/{prescriptionId} {
+      allow read: if isDoctor() || isAdmin();
+      allow create, update: if isDoctor() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /treatments/{treatmentId} {
       allow read: if isDoctor() || isAdmin();
       allow create, update: if isDoctor() || isAdmin();
       allow delete: if isAdmin();

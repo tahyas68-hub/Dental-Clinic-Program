@@ -36,7 +36,11 @@ export const Header = ({ activeTabLabel, user, clinicSettings, handleLogout }: H
           </div>
           <div className="text-right hidden sm:block">
             <p className="text-xs font-bold text-slate-800 leading-none">{user.name}</p>
-            <p className="text-[10px] text-slate-500 capitalize leading-none mt-1">{user.role}</p>
+            <p className="text-[10px] text-slate-500 leading-none mt-1">
+              {user.role === 'admin' ? 'مدير' : 
+               user.role === 'doctor' ? 'طبيب' : 
+               user.role === 'accountant' ? 'محاسب' : 'موظف استقبال'}
+            </p>
           </div>
         </div>
         

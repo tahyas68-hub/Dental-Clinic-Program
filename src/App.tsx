@@ -26,8 +26,10 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { StatCard } from './components/dashboard/StatCard';
 
-import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { auth, db, loginWithEmail, logout, handleFirestoreError, OperationType } from './firebase';
+import { onAuthStateChanged, createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
+import { initializeApp, deleteApp } from 'firebase/app';
+import firebaseConfig from '../firebase-applet-config.json';
 import { 
   collection, onSnapshot, query, addDoc, updateDoc, doc, 
   deleteDoc, setDoc, getDoc, getDocs, where, orderBy,
@@ -102,6 +104,7 @@ export default function App() {
   const [showProcedureModal, setShowProcedureModal] = useState(false);
 
   // Login Form State
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
 
   useEffect(() => {
@@ -120,7 +123,7 @@ export default function App() {
       setIsCheckingUser(true);
       try {
         if (firebaseUser) {
-          console.log("Firebase user detected:", firebaseUser.email, firebaseUser.uid);
+          console.log("Firebase user detected:", firebaseUser.uid);
           // Check if user exists in our users collection
           let userDoc;
           try {
@@ -133,30 +136,9 @@ export default function App() {
             console.log("User document found:", userDoc.data());
             setUser({ ...userDoc.data(), id: userDoc.id, uid: firebaseUser.uid } as User);
           } else {
-            console.log("User document not found. Checking if admin...");
-            // If it's the first admin email, create the admin user
-            if (firebaseUser.email === 'tahyas68@gmail.com') {
-              console.log("Admin email detected. Creating admin document...");
-              const adminData = {
-                uid: firebaseUser.uid,
-                email: firebaseUser.email,
-                name: firebaseUser.displayName || 'Admin',
-                role: 'admin' as const,
-                username: firebaseUser.email,
-                createdAt: serverTimestamp()
-              };
-              try {
-                await setDoc(doc(db, 'users', firebaseUser.uid), adminData);
-                console.log("Admin document created successfully.");
-                setUser({ ...adminData, id: firebaseUser.uid } as User);
-              } catch (e) {
-                handleFirestoreError(e, OperationType.WRITE, `users/${firebaseUser.uid}`);
-              }
-            } else {
-              console.log("Not an admin and no document found. Logging out...");
-              setLoginError('يرجى التواصل مع المدير لتفعيل حسابك (البريد غير مسجل)');
-              await logout();
-            }
+            console.log("User document not found. Logging out...");
+            setLoginError('يرجى التواصل مع المدير لتفعيل حسابك');
+            await logout();
           }
         } else {
           console.log("No Firebase user detected.");
@@ -253,21 +235,73 @@ export default function App() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    if (!loginForm.username || !loginForm.password) {
+      setLoginError('يرجى إدخال اسم المستخدم وكلمة المرور');
+      return;
+    }
+    setLoading(true);
     try {
-      await loginWithGoogle();
+      // First, check if the user exists in our Firestore 'users' collection
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('username', '==', loginForm.username));
+      const querySnapshot = await getDocs(q);
+      
+      if (querySnapshot.empty) {
+        // Special case for initial setup: if no users exist, allow admin/admin123 to bootstrap
+        if (loginForm.username === 'admin' && loginForm.password === 'admin123') {
+           // Create the first admin in Firebase Auth and Firestore
+           const secondaryApp = initializeApp(firebaseConfig, 'Bootstrap');
+           const secondaryAuth = getAuth(secondaryApp);
+           const email = `admin@clinic.local`;
+           try {
+             const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, 'admin123');
+             const uid = userCredential.user.uid;
+             
+             await setDoc(doc(db, 'users', uid), {
+               uid: uid,
+               username: 'admin',
+               password: 'admin123',
+               name: 'مدير النظام',
+               role: 'admin',
+               createdAt: serverTimestamp()
+             });
+             
+             await deleteApp(secondaryApp);
+             // Now login with the newly created account
+             await loginWithEmail('admin', 'admin123');
+             return;
+           } catch (err: any) {
+             await deleteApp(secondaryApp);
+             console.error("Bootstrap error:", err);
+             setLoginError('حدث خطأ أثناء إعداد حساب المدير: ' + err.message);
+             return;
+           }
+        } else {
+           setLoginError('اسم المستخدم غير موجود');
+        }
+        setLoading(false);
+        return;
+      }
+
+      const userData = querySnapshot.docs[0].data();
+      if (userData.password !== loginForm.password) {
+        setLoginError('كلمة المرور غير صحيحة');
+        setLoading(false);
+        return;
+      }
+
+      // If credentials match, we use Firebase Auth to sign in
+      try {
+        await loginWithEmail(loginForm.username, loginForm.password);
+      } catch (authError: any) {
+        console.error("Auth error:", authError);
+        setLoginError('خطأ في المصادقة: تأكد من تفعيل "Email/Password" في Firebase');
+      }
     } catch (error: any) {
       console.error("Login error details:", error);
-      if (error.code === 'auth/unauthorized-domain') {
-        setLoginError('هذا النطاق غير مصرح به في إعدادات Firebase. يرجى إضافة رابط الموقع إلى Authorized domains.');
-      } else if (error.code === 'auth/configuration-not-found') {
-        setLoginError('لم يتم تفعيل خدمة تسجيل الدخول بعد. يرجى الضغط على زر "Get started" في شاشة Firebase التي صورتها.');
-      } else if (error.code === 'auth/popup-blocked') {
-        setLoginError('تم حظر النافذة المنبثقة. يرجى السماح بالمنبثقات في متصفحك.');
-      } else if (error.code === 'auth/operation-not-allowed') {
-        setLoginError('تسجيل الدخول عبر جوجل غير مفعل في Firebase. يرجى تفعيله من قسم Authentication.');
-      } else {
-        setLoginError('حدث خطأ أثناء تسجيل الدخول عبر جوجل. تأكد من تفعيل الخدمة في Firebase.');
-      }
+      setLoginError('حدث خطأ أثناء تسجيل الدخول: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -360,16 +394,38 @@ export default function App() {
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoading(true);
     try {
-      await addDoc(collection(db, 'users'), {
+      // Create a secondary Firebase app to create the user without logging out the current admin
+      const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
+      const secondaryAuth = getAuth(secondaryApp);
+      
+      const email = `${newUser.username.toLowerCase()}@clinic.local`;
+      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, newUser.password);
+      const uid = userCredential.user.uid;
+
+      // Add to Firestore using the new UID
+      await setDoc(doc(db, 'users', uid), {
         ...newUser,
+        uid: uid,
         createdAt: serverTimestamp()
       });
+
+      // Cleanup secondary app
+      await deleteApp(secondaryApp);
+
       setShowUserModal(false);
       setNewUser({ username: '', password: '', role: 'doctor', name: '' });
       setSuccessMessage('تم إضافة المستخدم بنجاح');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'users');
+    } catch (error: any) {
+      console.error("Error adding user:", error);
+      if (error.code === 'auth/email-already-in-box') {
+        setErrorMessage('اسم المستخدم موجود مسبقاً');
+      } else {
+        setErrorMessage('حدث خطأ أثناء إضافة المستخدم: ' + error.message);
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -731,19 +787,47 @@ export default function App() {
             <p className="text-slate-500">نظام إدارة عيادة الأسنان المتكامل</p>
           </div>
 
-          <div className="space-y-4">
-            {loginError && <p className="text-red-500 text-sm text-center mb-4">{loginError}</p>}
-            <button 
-              onClick={handleLogin}
-              className="w-full bg-white border border-slate-200 text-slate-700 py-3 rounded-xl font-bold hover:bg-slate-50 transition-all shadow-sm flex items-center justify-center gap-3 active:scale-[0.98]"
+          <form onSubmit={handleLogin} className="space-y-4">
+            {loginError && (
+              <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm text-center border border-red-100">
+                {loginError}
+              </div>
+            )}
+            
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-slate-700 mr-1">اسم المستخدم</label>
+              <Input 
+                type="text"
+                placeholder="أدخل اسم المستخدم"
+                value={loginForm.username}
+                onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                className="text-right"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-slate-700 mr-1">كلمة المرور</label>
+              <Input 
+                type="password"
+                placeholder="أدخل كلمة المرور"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                className="text-right"
+              />
+            </div>
+
+            <Button 
+              type="submit" 
+              className="w-full py-6 text-lg"
+              disabled={loading}
             >
-              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-              تسجيل الدخول عبر جوجل
-            </button>
+              {loading ? 'جاري الدخول...' : 'تسجيل الدخول'}
+            </Button>
+
             <p className="text-xs text-center text-slate-400 mt-6">
-              يجب أن يكون بريدك الإلكتروني مسجلاً من قبل المسؤول للوصول إلى النظام
+              يجب أن يكون حسابك مسجلاً من قبل المسؤول للوصول إلى النظام
             </p>
-          </div>
+          </form>
         </motion.div>
       </div>
     );
@@ -1435,7 +1519,7 @@ export default function App() {
                                 u.role === 'doctor' ? 'primary' : 
                                 u.role === 'accountant' ? 'success' : 'secondary'
                               }>
-                                {u.role === 'admin' ? 'مدير النظام' : u.role === 'doctor' ? 'طبيب' : u.role === 'accountant' ? 'محاسب' : 'موظف استقبال'}
+                                {u.role === 'admin' ? 'مدير' : u.role === 'doctor' ? 'طبيب' : u.role === 'accountant' ? 'محاسب' : 'موظف استقبال'}
                               </Badge>
                             </Table.Cell>
                             <Table.Cell className="text-center">
@@ -1748,7 +1832,7 @@ export default function App() {
                     <option value="doctor">طبيب</option>
                     <option value="accountant">محاسب</option>
                     <option value="receptionist">موظف استقبال</option>
-                    <option value="admin">مدير نظام</option>
+                    <option value="admin">مدير</option>
                   </select>
                 </div>
                 <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-all">إضافة المستخدم</button>

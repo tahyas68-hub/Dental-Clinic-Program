@@ -83,11 +83,12 @@
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
-        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
         "name": { "type": "string" },
         "role": { "type": "string", "enum": ["admin", "doctor", "accountant", "receptionist"] }
       },
-      "required": ["uid", "role"]
+      "required": ["uid", "username", "password", "role"]
     },
     "Prescription": {
       "title": "Prescription",
@@ -114,6 +115,20 @@
       },
       "required": ["patient_id", "medications"]
     },
+    "Treatment": {
+      "title": "Treatment",
+      "description": "Patient treatment records",
+      "type": "object",
+      "properties": {
+        "patient_id": { "type": "string" },
+        "procedure_name": { "type": "string" },
+        "doctor_name": { "type": "string" },
+        "cost": { "type": "number" },
+        "notes": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patient_id", "procedure_name", "date"]
+    },
     "ClinicSettings": {
       "title": "ClinicSettings",
       "description": "Global clinic settings",
@@ -133,6 +148,7 @@
     "/inventory": { "schema": "InventoryItem", "description": "Clinic inventory" },
     "/invoices": { "schema": "Invoice", "description": "Billing records" },
     "/prescriptions": { "schema": "Prescription", "description": "Patient prescriptions" },
+    "/treatments": { "schema": "Treatment", "description": "Patient treatment history" },
     "/users": { "schema": "UserRole", "description": "User roles" },
     "/settings": { "schema": "ClinicSettings", "description": "Clinic configuration" }
   }

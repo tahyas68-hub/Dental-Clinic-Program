@@ -69,7 +69,11 @@ export const Sidebar = ({ activeTab, setActiveTab, user, clinicSettings, handleL
           </div>
           <div className="text-right overflow-hidden">
             <p className="text-sm font-bold text-slate-800 leading-none truncate">{user.name}</p>
-            <p className="text-[10px] text-slate-500 capitalize leading-none mt-1">{user.role}</p>
+            <p className="text-[10px] text-slate-500 leading-none mt-1">
+              {user.role === 'admin' ? 'مدير' : 
+               user.role === 'doctor' ? 'طبيب' : 
+               user.role === 'accountant' ? 'محاسب' : 'موظف استقبال'}
+            </p>
           </div>
         </div>
         <button 
