@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+// Dental Clinic Management System - Updated 2026-03-27
 import { User, Patient, Appointment, Stats, Procedure, ClinicSettings } from './types';
 import { 
   Users, Calendar, CreditCard, Package, BarChart3, 
