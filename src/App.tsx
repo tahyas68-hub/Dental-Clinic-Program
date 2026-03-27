@@ -304,7 +304,11 @@ export default function App() {
              }
              await deleteApp(secondaryApp);
              console.error("Bootstrap error:", err);
-             setLoginError('حدث خطأ أثناء إعداد حساب المدير: ' + err.message);
+             if (err.code === 'auth/operation-not-allowed') {
+               setLoginError('خطأ: يجب تفعيل "Email/Password" في إعدادات Firebase (Authentication -> Sign-in method)');
+             } else {
+               setLoginError('حدث خطأ أثناء إعداد حساب المدير: ' + err.message);
+             }
              return;
            }
         } else {
