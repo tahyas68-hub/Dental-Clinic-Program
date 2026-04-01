@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   Users, Calendar, CreditCard, Package, BarChart3, 
-  LogOut, Stethoscope, FileText, Settings, Shield 
+  LogOut, Stethoscope, FileText, Settings, Shield, Pill
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { User, ClinicSettings } from '../../types';
@@ -21,6 +21,7 @@ export const Sidebar = ({ activeTab, setActiveTab, user, clinicSettings, handleL
     { id: 'patients', label: 'المرضى', icon: Users, roles: ['admin', 'doctor', 'receptionist'] },
     { id: 'appointments', label: 'المواعيد', icon: Calendar, roles: ['admin', 'doctor', 'receptionist'] },
     { id: 'prescriptions', label: 'الوصفات', icon: FileText, roles: ['admin', 'doctor'] },
+    { id: 'medications', label: 'الأدوية', icon: Pill, roles: ['admin', 'doctor'] },
     { id: 'finance', label: 'المالية', icon: CreditCard, roles: ['admin', 'accountant'] },
     { id: 'inventory', label: 'المخزون', icon: Package, roles: ['admin', 'receptionist'] },
     { id: 'users', label: 'المستخدمين', icon: Shield, roles: ['admin'] },

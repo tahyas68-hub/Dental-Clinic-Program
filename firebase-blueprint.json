@@ -5,6 +5,7 @@
       "description": "Patient information",
       "type": "object",
       "properties": {
+        "file_number": { "type": "number" },
         "name": { "type": "string" },
         "phone": { "type": "string" },
         "birthdate": { "type": "string" },
@@ -129,6 +130,19 @@
       },
       "required": ["patient_id", "procedure_name", "date"]
     },
+    "DentalChart": {
+      "title": "DentalChart",
+      "description": "Patient dental chart records",
+      "type": "object",
+      "properties": {
+        "patient_id": { "type": "string" },
+        "tooth_number": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patient_id", "tooth_number", "status"]
+    },
     "ClinicSettings": {
       "title": "ClinicSettings",
       "description": "Global clinic settings",
@@ -149,6 +163,7 @@
     "/invoices": { "schema": "Invoice", "description": "Billing records" },
     "/prescriptions": { "schema": "Prescription", "description": "Patient prescriptions" },
     "/treatments": { "schema": "Treatment", "description": "Patient treatment history" },
+    "/dental_charts": { "schema": "DentalChart", "description": "Patient dental charts" },
     "/users": { "schema": "UserRole", "description": "User roles" },
     "/settings": { "schema": "ClinicSettings", "description": "Clinic configuration" }
   }

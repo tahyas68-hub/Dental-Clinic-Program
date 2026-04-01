@@ -81,7 +81,8 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidPatient(data) {
-      return hasOnlyAllowedFields(['name', 'phone', 'birthdate', 'gender', 'medical_history', 'created_at']) &&
+      return hasOnlyAllowedFields(['file_number', 'name', 'phone', 'birthdate', 'gender', 'medical_history', 'created_at']) &&
+             (!('file_number' in data) || data.file_number is number) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
              data.gender in ['ذكر', 'أنثى'];
@@ -159,6 +160,12 @@ service cloud.firestore {
     }
 
     match /treatments/{treatmentId} {
+      allow read: if isDoctor() || isAdmin();
+      allow create, update: if isDoctor() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /dental_charts/{chartId} {
       allow read: if isDoctor() || isAdmin();
       allow create, update: if isDoctor() || isAdmin();
       allow delete: if isAdmin();

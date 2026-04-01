@@ -1,10 +1,16 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signOut, signInWithEmailAndPassword } from 'firebase/auth';
+import { getAuth, signOut, signInWithEmailAndPassword, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+// Set persistence to browserSessionPersistence to avoid IndexedDB errors in iframes
+setPersistence(auth, browserSessionPersistence).catch(err => {
+  console.error("Firebase Auth persistence error:", err);
+});
+
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId || '(default)');
 
 export enum OperationType {

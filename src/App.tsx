@@ -1,20 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 // Dental Clinic Management System - Updated 2026-03-27
-import { User, Patient, Appointment, Stats, Procedure, ClinicSettings } from './types';
+import { User, Patient, Appointment, Stats, Procedure, ClinicSettings, Medication, Prescription } from './types';
 import { 
   Users, Calendar, CreditCard, Package, BarChart3, 
   LogOut, Plus, Search, Bell, Menu, X, ChevronRight,
   Stethoscope, FileText, UserPlus, Clock, Check,
-  Settings, Shield, Download, Upload, UserCheck
+  Settings, Shield, Download, Upload, UserCheck, Pill
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, AreaChart, Area
+  LineChart, Line, AreaChart, Area, Cell
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
-import html2canvas from 'html2canvas';
+import * as htmlToImage from 'html-to-image';
 
 import { cn } from './lib/utils';
 import { Button } from './components/ui/Button';
@@ -26,9 +26,10 @@ import { Badge } from './components/ui/Badge';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { StatCard } from './components/dashboard/StatCard';
+import { DentalChart } from './components/patient/DentalChart';
 
 import { auth, db, loginWithEmail, logout, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged, createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
+import { onAuthStateChanged, createUserWithEmailAndPassword, getAuth, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import { initializeApp, deleteApp } from 'firebase/app';
 import firebaseConfig from '../firebase-applet-config.json';
 import { 
@@ -42,19 +43,28 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isCheckingUser, setIsCheckingUser] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [appointmentStatusFilter, setAppointmentStatusFilter] = useState('all');
+  const [appointmentDateFrom, setAppointmentDateFrom] = useState('');
+  const [appointmentDateTo, setAppointmentDateTo] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [medications, setMedications] = useState<any[]>([]);
-  const [clinicSettings, setClinicSettings] = useState<ClinicSettings | null>(null);
+  const [clinicSettings, setClinicSettings] = useState<ClinicSettings>({
+    id: 'clinic',
+    clinic_name: '',
+    clinic_logo: '',
+    contact_info: ''
+  });
   const [usersList, setUsersList] = useState<User[]>([]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [inventory, setInventory] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
   const [prescriptions, setPrescriptions] = useState<any[]>([]);
   const [treatments, setTreatments] = useState<any[]>([]);
+  const [dentalCharts, setDentalCharts] = useState<any[]>([]);
   const [selectedPatientFile, setSelectedPatientFile] = useState<Patient | null>(null);
   const [prescriptionToPrint, setPrescriptionToPrint] = useState<{
     patient: Patient, 
@@ -186,6 +196,8 @@ export default function App() {
       const unsubSettings = onSnapshot(doc(db, 'settings', 'clinic'), (doc) => {
         if (doc.exists()) {
           setClinicSettings({ ...doc.data(), id: doc.id } as ClinicSettings);
+        } else {
+          setClinicSettings({ id: 'clinic', clinic_name: '', clinic_logo: '', contact_info: '' });
         }
       }, (error) => handleFirestoreError(error, OperationType.GET, 'settings/clinic'));
 
@@ -205,6 +217,10 @@ export default function App() {
         setTreatments(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'treatments'));
 
+      const unsubDentalCharts = onSnapshot(collection(db, 'dental_charts'), (snapshot) => {
+        setDentalCharts(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+      }, (error) => handleFirestoreError(error, OperationType.GET, 'dental_charts'));
+
       let unsubUsers: () => void = () => {};
       if (user.role === 'admin') {
         unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -222,6 +238,7 @@ export default function App() {
         unsubInvoices();
         unsubPrescriptions();
         unsubTreatments();
+        unsubDentalCharts();
         unsubUsers();
       };
     }
@@ -237,9 +254,51 @@ export default function App() {
     });
   }, [patients, appointments, invoices]);
 
+  // Automatically assign file numbers to existing patients
+  useEffect(() => {
+    const assignMissingFileNumbers = async () => {
+      if (!user || user.role !== 'admin' || patients.length === 0) return;
+      
+      const patientsWithoutFileNumber = patients.filter(p => !p.file_number);
+      if (patientsWithoutFileNumber.length === 0) return;
+
+      try {
+        let currentMaxFileNumber = patients.reduce((max, p) => {
+          return p.file_number && p.file_number > max ? p.file_number : max;
+        }, 1000);
+
+        const sortedPatients = [...patientsWithoutFileNumber].sort((a, b) => {
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        });
+
+        for (const patient of sortedPatients) {
+          currentMaxFileNumber++;
+          await updateDoc(doc(db, 'patients', patient.id), {
+            file_number: currentMaxFileNumber
+          });
+        }
+        console.log(`Automatically assigned file numbers to ${sortedPatients.length} patients.`);
+      } catch (error) {
+        console.error("Failed to auto-assign file numbers:", error);
+      }
+    };
+
+    assignMissingFileNumbers();
+  }, [patients, user]);
+
   useEffect(() => {
     setSearchTerm('');
   }, [activeTab]);
+
+  // Keep selectedPatientFile in sync with patients array
+  useEffect(() => {
+    if (selectedPatientFile) {
+      const updatedPatient = patients.find(p => p.id === selectedPatientFile.id);
+      if (updatedPatient && JSON.stringify(updatedPatient) !== JSON.stringify(selectedPatientFile)) {
+        setSelectedPatientFile(updatedPatient);
+      }
+    }
+  }, [patients, selectedPatientFile]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,6 +320,7 @@ export default function App() {
            // Create the first admin in Firebase Auth and Firestore
            const secondaryApp = initializeApp(firebaseConfig, 'Bootstrap');
            const secondaryAuth = getAuth(secondaryApp);
+           await setPersistence(secondaryAuth, browserSessionPersistence).catch(() => {});
            const email = `admin@clinic.local`;
            try {
              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, 'admin123');
@@ -353,8 +413,13 @@ export default function App() {
   const handleAddPatient = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const nextFileNumber = patients.length > 0 
+        ? Math.max(...patients.map(p => p.file_number || 1000)) + 1 
+        : 1001;
+        
       await addDoc(collection(db, 'patients'), {
         ...newPatient,
+        file_number: nextFileNumber,
         created_at: new Date().toISOString()
       });
       setShowPatientModal(false);
@@ -421,7 +486,7 @@ export default function App() {
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setClinicSettings(prev => prev ? { ...prev, clinic_logo: reader.result as string } : null);
+        setClinicSettings(prev => ({ ...prev, clinic_logo: reader.result as string }));
       };
       reader.readAsDataURL(file);
     }
@@ -508,6 +573,45 @@ export default function App() {
     }
   };
 
+  const handleUpdatePatientFileNumbers = async () => {
+    try {
+      setLoading(true);
+      const patientsWithoutFileNumber = patients.filter(p => !p.file_number);
+      
+      if (patientsWithoutFileNumber.length === 0) {
+        alert('جميع المرضى لديهم أرقام ملفات بالفعل.');
+        setLoading(false);
+        return;
+      }
+
+      // Find the highest existing file number, or start at 1000
+      let currentMaxFileNumber = patients.reduce((max, p) => {
+        return p.file_number && p.file_number > max ? p.file_number : max;
+      }, 1000);
+
+      // Sort patients by created_at to assign numbers chronologically
+      const sortedPatients = [...patientsWithoutFileNumber].sort((a, b) => {
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+
+      let updatedCount = 0;
+      for (const patient of sortedPatients) {
+        currentMaxFileNumber++;
+        await updateDoc(doc(db, 'patients', patient.id), {
+          file_number: currentMaxFileNumber
+        });
+        updatedCount++;
+      }
+
+      alert(`تم تحديث أرقام الملفات بنجاح لـ ${updatedCount} مريض.`);
+    } catch (error) {
+      console.error("Failed to update file numbers", error);
+      alert('حدث خطأ أثناء تحديث أرقام الملفات.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleImportData = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -547,45 +651,20 @@ export default function App() {
     
     setExportingPDF(true);
     try {
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        onclone: (clonedDoc) => {
-          // Fix for html2canvas not supporting oklch colors in Tailwind v4
-          const elements = clonedDoc.getElementsByTagName('*');
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
-            const className = typeof el.className === 'string' ? el.className : (el.className as any).baseVal || '';
-            
-            // Check and replace common style properties that might use oklch
-            if (className.includes('slate')) {
-              if (className.includes('bg-slate-50')) el.style.backgroundColor = '#f8fafc';
-              if (className.includes('text-slate-600')) el.style.color = '#475569';
-              if (className.includes('text-slate-800')) el.style.color = '#1e293b';
-            }
-            if (className.includes('blue')) {
-              if (className.includes('text-blue-600')) el.style.color = '#2563eb';
-            }
-            if (className.includes('emerald')) {
-              if (className.includes('text-emerald-600')) el.style.color = '#059669';
-            }
-          }
-          
-          const table = clonedDoc.getElementById('invoices-table');
-          if (table) {
-            table.style.padding = '20px';
-            table.style.background = 'white';
-          }
+      const dataUrl = await htmlToImage.toPng(element, {
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        style: {
+          padding: '20px',
+          background: 'white',
         }
       });
-      const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF('p', 'mm', 'a4');
-      const imgProps = pdf.getImageProperties(imgData);
+      const imgProps = pdf.getImageProperties(dataUrl);
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
       
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save('invoices_report.pdf');
     } catch (error) {
       console.error("Error exporting PDF", error);
@@ -601,71 +680,47 @@ export default function App() {
     bp?: string, 
     diagnosis?: string
   ) => {
+    if (exportingPDF) return;
+    setExportingPDF(true);
     setPrescriptionToPrint({ patient, meds, weight, bp, diagnosis });
     
     // Wait for the state to update and the component to render
     setTimeout(async () => {
-      if (!prescriptionRef.current) return;
+      if (!prescriptionRef.current) {
+        setErrorMessage("لم يتم العثور على قالب الوصفة الطبية");
+        setExportingPDF(false);
+        return;
+      }
       
       try {
-        const canvas = await html2canvas(prescriptionRef.current, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          backgroundColor: '#ffffff'
+        const dataUrl = await htmlToImage.toPng(prescriptionRef.current, {
+          pixelRatio: 2,
+          backgroundColor: '#ffffff',
         });
         
-        const imgData = canvas.toDataURL('image/png');
-        const pdf = new jsPDF({
-          orientation: 'p',
-          unit: 'mm',
-          format: 'a5',
-        });
+        if (dataUrl === 'data:,') {
+          throw new Error('Canvas rendering failed (empty image)');
+        }
+
+        const pdf = new jsPDF('p', 'mm', 'a5');
         
-        const imgProps = pdf.getImageProperties(imgData);
+        const imgProps = pdf.getImageProperties(dataUrl);
         const pdfWidth = pdf.internal.pageSize.getWidth();
         const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
         
-        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-        pdf.save(`prescription_${patient.name}_${new Date().toISOString().split('T')[0]}.pdf`);
+        pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
         
-        // Also trigger browser print dialog for immediate printing
-        const printWindow = window.open('', '_blank');
-        if (printWindow) {
-          printWindow.document.write(`
-            <html>
-              <head>
-                <title>Prescription - ${patient.name}</title>
-                <style>
-                  body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: flex-start; background: #f0f0f0; }
-                  img { width: 100%; max-width: 148mm; height: auto; box-shadow: 0 0 20px rgba(0,0,0,0.1); background: white; }
-                  @page { size: A5; margin: 0; }
-                  @media print {
-                    body { background: white; }
-                    img { box-shadow: none; width: 100%; }
-                  }
-                </style>
-              </head>
-              <body>
-                <img src="${imgData}" />
-                <script>
-                  window.onload = () => {
-                    window.print();
-                    window.onafterprint = () => window.close();
-                  };
-                </script>
-              </body>
-            </html>
-          `);
-          printWindow.document.close();
-        }
+        const safeName = (patient.name || 'مريض').replace(/[^a-zA-Z0-9\u0600-\u06FF\s]/g, '_');
+        pdf.save(`prescription_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`);
         
         setPrescriptionToPrint(null);
-      } catch (error) {
+      } catch (error: any) {
         console.error("Error generating prescription:", error);
-        setErrorMessage("حدث خطأ أثناء إنشاء الوصفة الطبية للطباعة");
+        setErrorMessage(`حدث خطأ أثناء تصدير الوصفة الطبية إلى PDF: ${error?.message || 'خطأ غير معروف'}`);
+      } finally {
+        setExportingPDF(false);
       }
-    }, 500);
+    }, 1000);
   };
 
   const addMedicationRow = () => {
@@ -727,6 +782,16 @@ export default function App() {
       setSuccessMessage('تم إضافة الدواء بنجاح');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'medications');
+    }
+  };
+
+  const handleDeleteMedication = async (id: string) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذا الدواء؟')) return;
+    try {
+      await deleteDoc(doc(db, 'medications', id));
+      setSuccessMessage('تم حذف الدواء بنجاح');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'medications');
     }
   };
 
@@ -862,7 +927,6 @@ export default function App() {
             <p className="text-xs text-center text-slate-400 mt-6">
               يجب أن يكون حسابك مسجلاً من قبل المسؤول للوصول إلى النظام
             </p>
-            <p className="text-[10px] text-center text-slate-300 mt-2">v1.0.2 - Username Login Update</p>
           </form>
         </motion.div>
       </div>
@@ -874,6 +938,7 @@ export default function App() {
     { id: 'patients', label: 'المرضى', icon: Users, roles: ['admin', 'doctor', 'receptionist'] },
     { id: 'appointments', label: 'المواعيد', icon: Calendar, roles: ['admin', 'doctor', 'receptionist'] },
     { id: 'prescriptions', label: 'الوصفات', icon: FileText, roles: ['admin', 'doctor'] },
+    { id: 'medications', label: 'الأدوية', icon: Pill, roles: ['admin', 'doctor'] },
     { id: 'finance', label: 'المالية', icon: CreditCard, roles: ['admin', 'accountant'] },
     { id: 'inventory', label: 'المخزون', icon: Package, roles: ['admin', 'receptionist'] },
     { id: 'users', label: 'المستخدمين', icon: Shield, roles: ['admin'] },
@@ -978,20 +1043,24 @@ export default function App() {
                         <Button variant="ghost" size="sm" onClick={() => setActiveTab('appointments')}>عرض الكل</Button>
                       </Card.Header>
                       <Card.Content>
-                        {appointments.slice(0, 4).map((apt) => (
+                        {appointments.slice(0, 4).map((apt) => {
+                          const patient = patients.find(p => p.id === apt.patient_id);
+                          return (
                           <div key={apt.id} className="flex items-center gap-4 p-4 rounded-xl border border-slate-50 hover:bg-slate-50 transition-all group">
                             <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors">
                               <Clock className="w-6 h-6" />
                             </div>
                             <div className="flex-1">
                               <p className="font-bold text-slate-800">{apt.patient_name}</p>
+                              <p className="text-xs text-slate-500">#{patient?.file_number || patient?.id.substring(0, 6) || apt.patient_id.substring(0, 6)}</p>
                               <p className="text-sm text-slate-500">{new Date(apt.start_time).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</p>
                             </div>
                             <Badge variant={apt.status === 'confirmed' ? 'success' : 'warning'}>
                               {apt.status === 'confirmed' ? 'مؤكد' : 'قيد الانتظار'}
                             </Badge>
                           </div>
-                        ))}
+                          );
+                        })}
                         {appointments.length === 0 && (
                           <div className="text-center py-8 text-slate-400">لا توجد مواعيد قادمة</div>
                         )}
@@ -1035,6 +1104,7 @@ export default function App() {
                   <Table>
                     <Table.Header>
                       <Table.Row>
+                        <Table.Head>رقم الملف</Table.Head>
                         <Table.Head>الاسم</Table.Head>
                         <Table.Head>رقم الهاتف</Table.Head>
                         <Table.Head>تاريخ الميلاد</Table.Head>
@@ -1045,9 +1115,11 @@ export default function App() {
                     <Table.Body>
                       {patients.filter(p => 
                         (p.name?.toLowerCase().includes(searchTerm.toLowerCase())) || 
-                        (p.phone?.includes(searchTerm))
+                        (p.phone?.includes(searchTerm)) ||
+                        (p.file_number?.toString().includes(searchTerm))
                       ).map((patient) => (
                         <Table.Row key={patient.id}>
+                          <Table.Cell className="font-mono text-slate-500">#{patient.file_number || patient.id.substring(0, 6)}</Table.Cell>
                           <Table.Cell>
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 font-bold">
@@ -1099,6 +1171,90 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div className="flex flex-col sm:flex-row items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="flex-1 w-full">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">حالة الموعد</label>
+                      <select 
+                        className="w-full h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        value={appointmentStatusFilter}
+                        onChange={(e) => setAppointmentStatusFilter(e.target.value)}
+                      >
+                        <option value="all">جميع الحالات</option>
+                        <option value="pending">قيد الانتظار</option>
+                        <option value="confirmed">مؤكد</option>
+                        <option value="completed">مكتمل</option>
+                        <option value="cancelled">ملغي</option>
+                      </select>
+                    </div>
+                    <div className="flex-1 w-full">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">من تاريخ</label>
+                      <Input 
+                        type="date" 
+                        className="h-10 text-sm"
+                        value={appointmentDateFrom}
+                        onChange={(e) => setAppointmentDateFrom(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1 w-full">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">إلى تاريخ</label>
+                      <Input 
+                        type="date" 
+                        className="h-10 text-sm"
+                        value={appointmentDateTo}
+                        onChange={(e) => setAppointmentDateTo(e.target.value)}
+                      />
+                    </div>
+                    {(appointmentStatusFilter !== 'all' || appointmentDateFrom || appointmentDateTo) && (
+                      <div className="flex items-end h-full pt-5">
+                        <Button 
+                          variant="ghost" 
+                          onClick={() => {
+                            setAppointmentStatusFilter('all');
+                            setAppointmentDateFrom('');
+                            setAppointmentDateTo('');
+                          }}
+                          className="text-slate-500 hover:text-slate-700 h-10"
+                        >
+                          إلغاء الفلاتر
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h4 className="text-lg font-bold text-slate-800 mb-4">إحصائيات مواعيد الشهر الحالي</h4>
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={[
+                          { name: 'قيد الانتظار', count: appointments.filter(a => a.status === 'pending' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#f59e0b' },
+                          { name: 'مؤكد', count: appointments.filter(a => a.status === 'confirmed' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#3b82f6' },
+                          { name: 'مكتمل', count: appointments.filter(a => a.status === 'completed' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#10b981' },
+                          { name: 'ملغي', count: appointments.filter(a => a.status === 'cancelled' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#ef4444' },
+                        ]} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} allowDecimals={false} />
+                          <Tooltip 
+                            cursor={{ fill: '#f8fafc' }}
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={40} name="عدد المواعيد">
+                            {
+                              [
+                                { name: 'قيد الانتظار', count: appointments.filter(a => a.status === 'pending' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#f59e0b' },
+                                { name: 'مؤكد', count: appointments.filter(a => a.status === 'confirmed' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#3b82f6' },
+                                { name: 'مكتمل', count: appointments.filter(a => a.status === 'completed' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#10b981' },
+                                { name: 'ملغي', count: appointments.filter(a => a.status === 'cancelled' && new Date(a.start_time).getMonth() === new Date().getMonth() && new Date(a.start_time).getFullYear() === new Date().getFullYear()).length, color: '#ef4444' },
+                              ].map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={entry.color} />
+                              ))
+                            }
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
                   <Table>
                     <Table.Header>
                       <Table.Row>
@@ -1110,12 +1266,34 @@ export default function App() {
                       </Table.Row>
                     </Table.Header>
                     <Table.Body>
-                      {appointments.filter(apt => 
-                        apt.patient_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                        apt.notes?.toLowerCase().includes(searchTerm.toLowerCase())
-                      ).map((apt) => (
+                      {appointments.filter(apt => {
+                        const matchesSearch = apt.patient_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                                              apt.notes?.toLowerCase().includes(searchTerm.toLowerCase());
+                        const matchesStatus = appointmentStatusFilter === 'all' || apt.status === appointmentStatusFilter;
+                        
+                        let matchesDate = true;
+                        if (appointmentDateFrom) {
+                          const fromDate = new Date(appointmentDateFrom);
+                          fromDate.setHours(0, 0, 0, 0);
+                          matchesDate = matchesDate && new Date(apt.start_time) >= fromDate;
+                        }
+                        if (appointmentDateTo) {
+                          const toDate = new Date(appointmentDateTo);
+                          toDate.setHours(23, 59, 59, 999);
+                          matchesDate = matchesDate && new Date(apt.start_time) <= toDate;
+                        }
+                        
+                        return matchesSearch && matchesStatus && matchesDate;
+                      }).map((apt) => {
+                        const patient = patients.find(p => p.id === apt.patient_id);
+                        return (
                         <Table.Row key={apt.id}>
-                          <Table.Cell className="font-bold text-slate-800">{apt.patient_name}</Table.Cell>
+                          <Table.Cell>
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-800">{apt.patient_name}</span>
+                              <span className="text-xs text-slate-500">#{patient?.file_number || patient?.id.substring(0, 6) || apt.patient_id.substring(0, 6)}</span>
+                            </div>
+                          </Table.Cell>
                           <Table.Cell className="text-slate-600">
                             {new Date(apt.start_time).toLocaleString('ar-EG', { 
                               weekday: 'long', 
@@ -1146,7 +1324,8 @@ export default function App() {
                             )}
                           </Table.Cell>
                         </Table.Row>
-                      ))}
+                        );
+                      })}
                       {appointments.length === 0 && (
                         <Table.Row>
                           <Table.Cell colSpan={5} className="py-12 text-center text-slate-400">
@@ -1235,10 +1414,17 @@ export default function App() {
                             {invoices.filter(inv => 
                               inv.patient_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
                               (inv.invoice_number?.toString().includes(searchTerm))
-                            ).map((inv) => (
+                            ).map((inv) => {
+                              const patient = patients.find(p => p.id === inv.patient_id);
+                              return (
                               <Table.Row key={inv.id}>
                                 <Table.Cell className="text-slate-800 font-medium">#{inv.invoice_number || inv.id}</Table.Cell>
-                                <Table.Cell className="text-slate-800 font-bold">{inv.patient_name}</Table.Cell>
+                                <Table.Cell>
+                                  <div className="flex flex-col">
+                                    <span className="font-bold text-slate-800">{inv.patient_name}</span>
+                                    <span className="text-xs text-slate-500">#{patient?.file_number || patient?.id.substring(0, 6) || inv.patient_id.substring(0, 6)}</span>
+                                  </div>
+                                </Table.Cell>
                                 <Table.Cell className="text-blue-600 font-bold">{inv.total_amount.toLocaleString()} د.ع</Table.Cell>
                                 <Table.Cell className="text-emerald-600 font-bold">{inv.paid_amount.toLocaleString()} د.ع</Table.Cell>
                                 <Table.Cell className="text-slate-600">{formatDate(inv.created_at)}</Table.Cell>
@@ -1248,7 +1434,8 @@ export default function App() {
                                   </Badge>
                                 </Table.Cell>
                               </Table.Row>
-                            ))}
+                              );
+                            })}
                           </Table.Body>
                         </Table>
                       ) : (
@@ -1377,10 +1564,20 @@ export default function App() {
                                 <Input 
                                   label="التكرار"
                                   required
+                                  list="frequency-list"
                                   placeholder="مثال: 3 مرات يومياً"
                                   value={med.frequency}
                                   onChange={e => updateMedication(index, 'frequency', e.target.value)}
                                 />
+                                <datalist id="frequency-list">
+                                  <option value="مرة يومياً" />
+                                  <option value="مرتان يومياً" />
+                                  <option value="3 مرات يومياً" />
+                                  <option value="كل ساعتين" />
+                                  <option value="عند اللزوم" />
+                                  <option value="قبل الأكل" />
+                                  <option value="بعد الأكل" />
+                                </datalist>
                               </div>
                               <div className="md:col-span-1 flex justify-center pb-2">
                                 <Button 
@@ -1401,8 +1598,9 @@ export default function App() {
                           <Button 
                             type="submit"
                             className="flex-1 py-4"
+                            disabled={exportingPDF}
                           >
-                            إصدار وطباعة الوصفة
+                            {exportingPDF ? 'جاري التصدير...' : 'إصدار وتصدير PDF'}
                           </Button>
                           <Button 
                             type="button"
@@ -1429,6 +1627,128 @@ export default function App() {
                       <strong>ملاحظة:</strong> سيتم حفظ الوصفة الطبية في ملف المريض تلقائياً بعد الإصدار. يمكنك الوصول إليها لاحقاً من قسم "المرضى".
                     </p>
                   </div>
+
+                  <Card>
+                    <Card.Header className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-blue-100 p-2 rounded-lg">
+                          <FileText className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <Card.Title className="text-lg">آخر الوصفات الصادرة</Card.Title>
+                      </div>
+                    </Card.Header>
+                    <Card.Content>
+                      <Table>
+                        <Table.Header>
+                          <Table.Row>
+                            <Table.Head>التاريخ</Table.Head>
+                            <Table.Head>المريض</Table.Head>
+                            <Table.Head>التشخيص</Table.Head>
+                            <Table.Head className="text-left">الإجراءات</Table.Head>
+                          </Table.Row>
+                        </Table.Header>
+                        <Table.Body>
+                          {prescriptions.length > 0 ? (
+                            prescriptions
+                              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                              .slice(0, 10)
+                              .map((p) => {
+                                const patient = patients.find(pat => pat.id === p.patient_id);
+                                return (
+                                  <Table.Row key={p.id}>
+                                    <Table.Cell className="text-slate-600">{formatDate(p.created_at)}</Table.Cell>
+                                    <Table.Cell>
+                                      <div className="flex flex-col">
+                                        <span className="font-bold text-slate-800">{patient?.name || 'مريض غير معروف'}</span>
+                                        {patient && <span className="text-xs text-slate-500">#{patient.file_number || patient.id.substring(0, 6)}</span>}
+                                      </div>
+                                    </Table.Cell>
+                                    <Table.Cell className="text-slate-600 truncate max-w-[200px]">{p.diagnosis || '-'}</Table.Cell>
+                                    <Table.Cell className="text-left">
+                                      <Button 
+                                        variant="ghost" 
+                                        size="sm"
+                                        onClick={() => patient && generatePrescriptionPDF(
+                                          patient, 
+                                          p.medications, 
+                                          p.weight, 
+                                          p.bp, 
+                                          p.diagnosis
+                                        )}
+                                        className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                        disabled={exportingPDF}
+                                      >
+                                        <Download className="w-4 h-4 ml-1" />
+                                        {exportingPDF ? 'جاري التصدير...' : 'تصدير PDF'}
+                                      </Button>
+                                    </Table.Cell>
+                                  </Table.Row>
+                                );
+                              })
+                          ) : (
+                            <Table.Row>
+                              <Table.Cell colSpan={4} className="text-center py-8 text-slate-500">
+                                لا توجد وصفات صادرة حالياً.
+                              </Table.Cell>
+                            </Table.Row>
+                          )}
+                        </Table.Body>
+                      </Table>
+                    </Card.Content>
+                  </Card>
+                </div>
+              )}
+
+              {activeTab === 'medications' && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-2xl font-bold text-slate-800">إدارة الأدوية</h2>
+                      <p className="text-slate-500">إضافة وتعديل الأدوية المتاحة في العيادة</p>
+                    </div>
+                    <Button onClick={() => setShowMedicationModal(true)}>
+                      <Plus className="w-5 h-5 ml-2" />
+                      إضافة دواء جديد
+                    </Button>
+                  </div>
+
+                  <Card>
+                    <Table>
+                      <Table.Header>
+                        <Table.Row>
+                          <Table.Head>اسم الدواء</Table.Head>
+                          <Table.Head>الوصف / الاستخدام</Table.Head>
+                          <Table.Head className="text-left">الإجراءات</Table.Head>
+                        </Table.Row>
+                      </Table.Header>
+                      <Table.Body>
+                        {medications.length > 0 ? (
+                          medications.map((med) => (
+                            <Table.Row key={med.id}>
+                              <Table.Cell className="font-bold text-slate-800">{med.name}</Table.Cell>
+                              <Table.Cell className="text-slate-600">{med.description || '-'}</Table.Cell>
+                              <Table.Cell className="text-left">
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => handleDeleteMedication(med.id)}
+                                >
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </Table.Cell>
+                            </Table.Row>
+                          ))
+                        ) : (
+                          <Table.Row>
+                            <Table.Cell colSpan={3} className="text-center py-8 text-slate-500">
+                              لا توجد أدوية مسجلة حالياً.
+                            </Table.Cell>
+                          </Table.Row>
+                        )}
+                      </Table.Body>
+                    </Table>
+                  </Card>
                 </div>
               )}
 
@@ -1594,9 +1914,8 @@ export default function App() {
                           <div className="md:col-span-2">
                             <Input 
                               label="اسم العيادة"
-                              required
                               value={clinicSettings?.clinic_name || ''}
-                              onChange={e => setClinicSettings(prev => prev ? {...prev, clinic_name: e.target.value} : null)}
+                              onChange={e => setClinicSettings(prev => ({...prev, clinic_name: e.target.value}))}
                             />
                           </div>
                           <div className="md:col-span-2">
@@ -1619,9 +1938,8 @@ export default function App() {
                             <label className="block text-sm font-medium text-slate-700 mb-2">معلومات الاتصال</label>
                             <textarea 
                               rows={3}
-                              required
                               value={clinicSettings?.contact_info || ''}
-                              onChange={e => setClinicSettings(prev => prev ? {...prev, contact_info: e.target.value} : null)}
+                              onChange={e => setClinicSettings(prev => ({...prev, contact_info: e.target.value}))}
                               className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                             />
                           </div>
@@ -1629,6 +1947,96 @@ export default function App() {
                         <div className="flex justify-end pt-4">
                           <Button type="submit">
                             حفظ الإعدادات
+                          </Button>
+                        </div>
+                      </form>
+                    </Card.Content>
+                  </Card>
+
+                  <Card>
+                    <Card.Header>
+                      <Card.Title className="flex items-center gap-2">
+                        <FileText className="w-6 h-6 text-blue-600" />
+                        إعدادات الوصفة الطبية
+                      </Card.Title>
+                    </Card.Header>
+                    
+                    <Card.Content>
+                      <form onSubmit={handleUpdateSettings} className="space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <Input 
+                            label="اسم الطبيب (عربي)"
+                            value={clinicSettings?.prescription_doctor_name_ar || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_doctor_name_ar: e.target.value}))}
+                            placeholder="مثال: عيادة الدكتورة / أحلام عبده صويلح"
+                          />
+                          <Input 
+                            label="تخصص الطبيب (عربي)"
+                            value={clinicSettings?.prescription_doctor_title_ar || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_doctor_title_ar: e.target.value}))}
+                            placeholder="مثال: استشارية طب الأطفال وحديثي الولادة"
+                          />
+                          <Input 
+                            label="اسم الطبيب (إنجليزي)"
+                            value={clinicSettings?.prescription_doctor_name_en || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_doctor_name_en: e.target.value}))}
+                            placeholder="مثال: Dr. Ahlam Abdo Sweileh"
+                          />
+                          <Input 
+                            label="تخصص الطبيب (إنجليزي)"
+                            value={clinicSettings?.prescription_doctor_title_en || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_doctor_title_en: e.target.value}))}
+                            placeholder="مثال: Pediatric Consultant"
+                          />
+                          
+                          <div className="md:col-span-2 border-t border-slate-100 pt-4 mt-2"></div>
+                          
+                          <Input 
+                            label="اسم المركز (عربي)"
+                            value={clinicSettings?.prescription_center_name_ar || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_center_name_ar: e.target.value}))}
+                            placeholder="مثال: مركز الدكتور مطهر الدرويش الطبي التشخيصي"
+                          />
+                          <Input 
+                            label="اسم المركز (إنجليزي)"
+                            value={clinicSettings?.prescription_center_name_en || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_center_name_en: e.target.value}))}
+                            placeholder="مثال: Dr. Mutahar Al Darwish Therapeutic & Diagnostic Center"
+                          />
+                          <Input 
+                            label="شعار المركز (نصي)"
+                            value={clinicSettings?.prescription_center_subtitle || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_center_subtitle: e.target.value}))}
+                            placeholder="مثال: صحتكم أولويتنا"
+                          />
+                          
+                          <div className="md:col-span-2 border-t border-slate-100 pt-4 mt-2"></div>
+                          
+                          <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-slate-700 mb-2">تعليمات الوصفة (مفصولة بعلامة •)</label>
+                            <Input 
+                              value={clinicSettings?.prescription_footer_instructions || ''}
+                              onChange={e => setClinicSettings(prev => ({...prev, prescription_footer_instructions: e.target.value}))}
+                              placeholder="مثال: الرجاء عرض العلاج قبل الإستخدام • إحضار هذه الوصفة في الزيارة القادمة • المراجعة خلال 10 أيام"
+                            />
+                          </div>
+                          
+                          <Input 
+                            label="العنوان في الوصفة"
+                            value={clinicSettings?.prescription_address || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_address: e.target.value}))}
+                            placeholder="مثال: صنعاء - جولة عمران - أمام مدارس النجباء للبنين"
+                          />
+                          <Input 
+                            label="أرقام الهواتف (مفصولة بعلامة -)"
+                            value={clinicSettings?.prescription_phones || ''}
+                            onChange={e => setClinicSettings(prev => ({...prev, prescription_phones: e.target.value}))}
+                            placeholder="مثال: 01 322 811 - 777512221 - 777717544"
+                          />
+                        </div>
+                        <div className="flex justify-end pt-4">
+                          <Button type="submit">
+                            حفظ إعدادات الوصفة
                           </Button>
                         </div>
                       </form>
@@ -1674,6 +2082,19 @@ export default function App() {
                             استيراد قاعدة البيانات
                             <input type="file" accept=".json" onChange={handleImportData} className="hidden" />
                           </label>
+                        </div>
+                        <div className="p-6 rounded-xl bg-slate-50 border border-slate-100 md:col-span-2">
+                          <h4 className="font-bold text-slate-800 mb-2">تحديث أرقام الملفات القديمة</h4>
+                          <p className="text-sm text-slate-500 mb-4">قم بتعيين أرقام ملفات تسلسلية (تبدأ من 1001) للمرضى الذين ليس لديهم رقم ملف.</p>
+                          <Button 
+                            variant="outline"
+                            size="sm"
+                            onClick={handleUpdatePatientFileNumbers}
+                            disabled={loading}
+                          >
+                            <UserCheck className="w-4 h-4" />
+                            تحديث أرقام الملفات
+                          </Button>
                         </div>
                       </div>
                     </Card.Content>
@@ -2024,7 +2445,7 @@ export default function App() {
               </div>
               <div>
                 <h3 className="text-2xl font-bold text-slate-800">{selectedPatientFile.name}</h3>
-                <p className="text-slate-500">رقم الملف: #{selectedPatientFile.id}</p>
+                <p className="text-slate-500">رقم الملف: #{selectedPatientFile.file_number || selectedPatientFile.id}</p>
               </div>
             </div>
 
@@ -2094,6 +2515,15 @@ export default function App() {
                 )}
               >
                 الفواتير
+              </button>
+              <button
+                onClick={() => setPatientTab('dental_chart')}
+                className={cn(
+                  "pb-2 px-1 font-bold whitespace-nowrap transition-colors border-b-2",
+                  patientTab === 'dental_chart' ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-700"
+                )}
+              >
+                مخطط الأسنان
               </button>
             </div>
 
@@ -2242,6 +2672,13 @@ export default function App() {
                 </div>
               )}
 
+              {patientTab === 'dental_chart' && (
+                <DentalChart 
+                  patientId={selectedPatientFile.id} 
+                  charts={dentalCharts.filter(c => c.patient_id === selectedPatientFile.id)} 
+                />
+              )}
+
               {patientTab === 'prescriptions' && (
                 <div className="space-y-4">
                   {prescriptions.filter(p => p.patient_id === selectedPatientFile.id).length > 0 ? (
@@ -2276,8 +2713,9 @@ export default function App() {
                                   prescription.diagnosis
                                 )}
                                 className="w-full sm:w-auto text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                disabled={exportingPDF}
                               >
-                                طباعة الوصفة
+                                {exportingPDF ? 'جاري التصدير...' : 'تصدير PDF'}
                               </Button>
                             </div>
                             <div className="p-4">
@@ -2363,108 +2801,114 @@ export default function App() {
       </Modal>
 
       {/* Hidden Printable Prescription Template */}
-      <div className="fixed left-[-9999px] top-0">
+      <div className="fixed left-[-9999px] top-0 pointer-events-none">
         <div 
+          id="prescription-container"
           ref={prescriptionRef}
-          className="w-[800px] bg-white p-0 font-sans relative overflow-hidden"
+          className="w-[800px] p-0 font-sans relative overflow-hidden"
+          style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
           dir="rtl"
         >
           {prescriptionToPrint && (
             <>
               {/* Watermark Logo */}
               <div className="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
-                <div className="w-[500px] h-[500px] border-[40px] border-blue-900 rounded-full flex items-center justify-center">
-                  <Stethoscope className="w-80 h-80 text-blue-900" />
+                <div className="w-[500px] h-[500px] border-[40px] rounded-full flex items-center justify-center" style={{ borderColor: '#1e3a8a' }}>
+                  <Stethoscope className="w-80 h-80" style={{ color: '#1e3a8a' }} />
                 </div>
               </div>
 
               {/* Header Section */}
-              <div className="flex justify-between items-start p-6 border-b-2 border-blue-900 mb-4">
+              <div className="flex justify-between items-start p-6 border-b-2 mb-4" style={{ borderColor: '#1e3a8a' }}>
                 <div className="flex items-center gap-4 flex-1">
-                  <div className="w-20 h-20 rounded-full border-4 border-blue-900 flex items-center justify-center bg-white z-10 shrink-0">
-                    <div className="relative">
-                      <Stethoscope className="w-12 h-12 text-blue-900" />
-                      <span className="absolute -bottom-1 -right-1 bg-red-600 text-white text-[10px] font-bold px-1 rounded-sm">M</span>
-                    </div>
+                  <div className="w-20 h-20 rounded-full border-4 flex items-center justify-center z-10 shrink-0 overflow-hidden" style={{ borderColor: '#1e3a8a', backgroundColor: '#ffffff' }}>
+                    {clinicSettings?.clinic_logo ? (
+                      <img src={clinicSettings.clinic_logo} alt="Clinic Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="relative">
+                        <Stethoscope className="w-12 h-12" style={{ color: '#1e3a8a' }} />
+                        <span className="absolute -bottom-1 -right-1 text-[10px] font-bold px-1 rounded-sm" style={{ backgroundColor: '#dc2626', color: '#ffffff' }}>M</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="bg-blue-900 text-white px-4 py-2 rounded-sm flex-1">
-                    <h1 className="text-lg font-bold leading-tight">مركز الدكتور مطهر الدرويش الطبي التشخيصي</h1>
-                    <p className="text-[10px] opacity-90 font-medium">Dr. Mutahar Al Darwish Therapeutic & Diagnostic Center</p>
-                    <div className="mt-1 border-t border-white/20 pt-1">
-                      <p className="text-[10px] font-bold text-center">صحتكم أولويتنا</p>
+                  <div className="px-4 py-2 rounded-sm flex-1" style={{ backgroundColor: '#1e3a8a', color: '#ffffff' }}>
+                    <h1 className="text-lg font-bold leading-tight">{clinicSettings?.prescription_center_name_ar || 'مركز الدكتور مطهر الدرويش الطبي التشخيصي'}</h1>
+                    <p className="text-[10px] opacity-90 font-medium">{clinicSettings?.prescription_center_name_en || 'Dr. Mutahar Al Darwish Therapeutic & Diagnostic Center'}</p>
+                    <div className="mt-1 border-t pt-1" style={{ borderColor: 'rgba(255,255,255,0.2)' }}>
+                      <p className="text-[10px] font-bold text-center">{clinicSettings?.prescription_center_subtitle || 'صحتكم أولويتنا'}</p>
                     </div>
                   </div>
                 </div>
                 
-                <div className="text-left mr-6 text-blue-900">
-                  <h2 className="text-sm font-bold">عيادة الدكتورة / أحلام عبده صويلح</h2>
-                  <p className="text-[10px] font-bold">استشارية طب الأطفال وحديثي الولادة</p>
-                  <h2 className="text-sm font-bold mt-1">Dr. Ahlam Abdo Sweileh</h2>
-                  <p className="text-[10px] font-bold">Pediatric Consultant</p>
+                <div className="text-left mr-6" style={{ color: '#1e3a8a' }}>
+                  <h2 className="text-sm font-bold">{clinicSettings?.prescription_doctor_name_ar || 'عيادة الدكتورة / أحلام عبده صويلح'}</h2>
+                  <p className="text-[10px] font-bold">{clinicSettings?.prescription_doctor_title_ar || 'استشارية طب الأطفال وحديثي الولادة'}</p>
+                  <h2 className="text-sm font-bold mt-1">{clinicSettings?.prescription_doctor_name_en || 'Dr. Ahlam Abdo Sweileh'}</h2>
+                  <p className="text-[10px] font-bold">{clinicSettings?.prescription_doctor_title_en || 'Pediatric Consultant'}</p>
                 </div>
               </div>
 
               <div className="px-8 py-2">
                 {/* Patient Info Grid */}
                 <div className="grid grid-cols-2 gap-x-12 gap-y-3 mb-6 text-sm">
-                  <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                    <span className="font-bold text-blue-900 whitespace-nowrap">Name :</span>
+                  <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Name :</span>
                     <span className="flex-1 text-center font-medium">{prescriptionToPrint?.patient.name}</span>
-                    <span className="font-bold text-blue-900 whitespace-nowrap">: الأسم</span>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: الأسم</span>
                   </div>
-                  <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                    <span className="font-bold text-blue-900 whitespace-nowrap">Date :</span>
+                  <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Date :</span>
                     <span className="flex-1 text-center font-medium">{new Date().toLocaleDateString('ar-EG')}</span>
-                    <span className="font-bold text-blue-900 whitespace-nowrap">: التاريخ</span>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: التاريخ</span>
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                      <span className="font-bold text-blue-900 whitespace-nowrap">Age :</span>
+                    <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Age :</span>
                       <span className="flex-1 text-center font-medium">
                         {prescriptionToPrint?.patient.birthdate 
                           ? new Date().getFullYear() - new Date(prescriptionToPrint.patient.birthdate).getFullYear() 
                           : '-'}
                       </span>
-                      <span className="font-bold text-blue-900 whitespace-nowrap">: العمر</span>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: العمر</span>
                     </div>
-                    <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                      <span className="font-bold text-blue-900 whitespace-nowrap">Sex :</span>
+                    <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Sex :</span>
                       <span className="flex-1 text-center font-medium">{prescriptionToPrint?.patient.gender}</span>
-                      <span className="font-bold text-blue-900 whitespace-nowrap">: الجنس</span>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: الجنس</span>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                      <span className="font-bold text-blue-900 whitespace-nowrap">Weight :</span>
+                    <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Weight :</span>
                       <span className="flex-1 text-center font-medium">{prescriptionToPrint?.weight || '-'}</span>
-                      <span className="font-bold text-blue-900 whitespace-nowrap">: وزن المريض</span>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: وزن المريض</span>
                     </div>
-                    <div className="flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                      <span className="font-bold text-blue-900 whitespace-nowrap">B.P :</span>
+                    <div className="flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>B.P :</span>
                       <span className="flex-1 text-center font-medium">{prescriptionToPrint?.bp || '-'}</span>
-                      <span className="font-bold text-blue-900 whitespace-nowrap">: ضغط الدم</span>
+                      <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: ضغط الدم</span>
                     </div>
                   </div>
 
-                  <div className="col-span-2 flex items-end gap-2 border-b border-dotted border-slate-400 pb-1">
-                    <span className="font-bold text-blue-900 whitespace-nowrap">Diagnosis :</span>
+                  <div className="col-span-2 flex items-end gap-2 border-b border-dotted pb-1" style={{ borderColor: '#94a3b8' }}>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>Diagnosis :</span>
                     <span className="flex-1 text-center font-medium">{prescriptionToPrint?.diagnosis || '-'}</span>
-                    <span className="font-bold text-blue-900 whitespace-nowrap">: التشخيص</span>
+                    <span className="font-bold whitespace-nowrap" style={{ color: '#1e3a8a' }}>: التشخيص</span>
                   </div>
                 </div>
 
                 {/* Prescription Badge */}
                 <div className="flex justify-center mb-6">
-                  <div className="bg-blue-900 text-white px-8 py-1 rounded-md font-bold text-sm">
+                  <div className="px-8 py-1 rounded-md font-bold text-sm" style={{ backgroundColor: '#1e3a8a', color: '#ffffff' }}>
                     وصفة طبية
                   </div>
                 </div>
 
                 {/* Rx Symbol */}
                 <div className="mb-4">
-                  <span className="text-4xl font-serif text-blue-900 italic font-bold">Rx</span>
+                  <span className="text-4xl font-serif italic font-bold" style={{ color: '#1e3a8a' }}>Rx</span>
                 </div>
 
                 {/* Medications List */}
@@ -2472,12 +2916,12 @@ export default function App() {
                   <div className="space-y-6">
                     {prescriptionToPrint?.meds.map((med, index) => (
                       <div key={index} className="flex gap-4 items-start">
-                        <div className="w-6 h-6 rounded-full border border-blue-900 flex items-center justify-center text-blue-900 font-bold text-xs shrink-0 mt-1">
+                        <div className="w-6 h-6 rounded-full border flex items-center justify-center font-bold text-xs shrink-0 mt-1" style={{ borderColor: '#1e3a8a', color: '#1e3a8a' }}>
                           {index + 1}
                         </div>
                         <div className="flex-1">
-                          <p className="font-bold text-lg text-slate-900">{med.name}</p>
-                          <p className="text-sm text-slate-600 font-medium">
+                          <p className="font-bold text-lg" style={{ color: '#0f172a' }}>{med.name}</p>
+                          <p className="text-sm font-medium" style={{ color: '#475569' }}>
                             الجرعة: {med.dosage} | التكرار: {med.frequency}
                           </p>
                         </div>
@@ -2489,27 +2933,46 @@ export default function App() {
                 {/* Signature Area */}
                 <div className="flex justify-end mb-8">
                   <div className="text-center">
-                    <p className="text-sm font-serif italic text-blue-900 mb-1">Signature : ....................................................</p>
+                    <p className="text-sm font-serif italic mb-1" style={{ color: '#1e3a8a' }}>Signature : ....................................................</p>
                   </div>
                 </div>
 
                 {/* Footer Banner */}
-                <div className="border-t-2 border-blue-900 pt-2">
-                  <div className="bg-blue-900/5 p-2 rounded-sm text-center mb-2">
-                    <p className="text-[10px] font-bold text-blue-900 flex justify-center gap-4">
-                      <span>الرجاء عرض العلاج قبل الإستخدام</span>
-                      <span>•</span>
-                      <span>إحضار هذه الوصفة في الزيارة القادمة</span>
-                      <span>•</span>
-                      <span>المراجعة خلال 10 أيام</span>
+                <div className="border-t-2 pt-2" style={{ borderColor: '#1e3a8a' }}>
+                  <div className="p-2 rounded-sm text-center mb-2" style={{ backgroundColor: 'rgba(30,58,138,0.05)' }}>
+                    <p className="text-[10px] font-bold flex justify-center gap-4" style={{ color: '#1e3a8a' }}>
+                      {clinicSettings?.prescription_footer_instructions ? (
+                        clinicSettings.prescription_footer_instructions.split('•').map((part, idx, arr) => (
+                          <React.Fragment key={idx}>
+                            <span>{part.trim()}</span>
+                            {idx < arr.length - 1 && <span>•</span>}
+                          </React.Fragment>
+                        ))
+                      ) : (
+                        <>
+                          <span>الرجاء عرض العلاج قبل الإستخدام</span>
+                          <span>•</span>
+                          <span>إحضار هذه الوصفة في الزيارة القادمة</span>
+                          <span>•</span>
+                          <span>المراجعة خلال 10 أيام</span>
+                        </>
+                      )}
                     </p>
                   </div>
-                  <div className="flex justify-between items-center text-[9px] font-bold text-blue-900 px-2">
-                    <p>صنعاء - جولة عمران - أمام مدارس النجباء للبنين</p>
+                  <div className="flex justify-between items-center text-[9px] font-bold px-2" style={{ color: '#1e3a8a' }}>
+                    <p>{clinicSettings?.prescription_address || 'صنعاء - جولة عمران - أمام مدارس النجباء للبنين'}</p>
                     <div className="flex gap-4">
-                      <span>01 322 811</span>
-                      <span>777512221</span>
-                      <span>777717544</span>
+                      {clinicSettings?.prescription_phones ? (
+                        clinicSettings.prescription_phones.split('-').map((phone, idx) => (
+                          <span key={idx}>{phone.trim()}</span>
+                        ))
+                      ) : (
+                        <>
+                          <span>01 322 811</span>
+                          <span>777512221</span>
+                          <span>777717544</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

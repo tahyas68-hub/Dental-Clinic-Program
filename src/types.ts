@@ -8,6 +8,7 @@ export interface User {
 
 export interface Patient {
   id: string;
+  file_number?: number;
   name: string;
   phone: string;
   email: string;
@@ -46,4 +47,46 @@ export interface ClinicSettings {
   clinic_name: string;
   clinic_logo: string;
   contact_info: string;
+  
+  // Prescription Settings
+  prescription_doctor_name_ar?: string;
+  prescription_doctor_title_ar?: string;
+  prescription_doctor_name_en?: string;
+  prescription_doctor_title_en?: string;
+  prescription_center_name_ar?: string;
+  prescription_center_name_en?: string;
+  prescription_center_subtitle?: string;
+  prescription_footer_instructions?: string;
+  prescription_address?: string;
+  prescription_phones?: string;
+}
+
+export interface Medication {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface Prescription {
+  id: string;
+  patient_id: string;
+  doctor_id: string;
+  weight?: string;
+  bp?: string;
+  diagnosis?: string;
+  medications: {
+    name: string;
+    dosage: string;
+    frequency: string;
+  }[];
+  created_at: any;
+}
+
+export interface DentalChart {
+  id: string;
+  patient_id: string;
+  tooth_number: number;
+  status: string;
+  notes?: string;
+  updated_at: string;
 }
